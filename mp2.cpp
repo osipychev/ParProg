@@ -4,11 +4,13 @@
         cudaError_t err = stmt;                            \
         if (err != cudaSuccess) {                          \
             wbLog(ERROR, "Failed to run stmt ", #stmt);    \
+            wbLog(ERROR, "Got CUDA error ...  ", cudaGetErrorString(err)); \
             return -1;                                     \
         }                                                  \
     } while(0)
 
-/*/ Compute C = A * B
+/* Serial multiplication code for test purpose
+/ Compute C = A * B
 void matrixMultiply(float *A, float *B, float *C, int numARows, int numAColumns, int numBRows, int numBColumns, int numCRows, int numCColumns) {
     //@@ Insert code to implement matrix multiplication here
   for (int i = 0; i < numARows; ++i){
@@ -21,7 +23,8 @@ void matrixMultiply(float *A, float *B, float *C, int numARows, int numAColumns,
             }
             C[i * numCColumns + j] = sum;
         }}
-}*/
+}
+*/
 
 // Compute C = A * B
 __global__ void matrixMultiply(float *A, float *B, float *C, int numAColumns, int numCRows, int numCColumns) {
@@ -38,7 +41,7 @@ __global__ void matrixMultiply(float *A, float *B, float *C, int numAColumns, in
   } 
 }
 
-int main(int argc, char ** argv) {
+int main(int argc, char **argv) {
   wbArg_t args;
   float * hostA; // The A matrix
     float * hostB; // The B matrix
