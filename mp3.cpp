@@ -10,23 +10,34 @@
     }                                                                     \
   } while (0)
 
+#define TILE_WIDTH 32; \
+
 // Compute C = A * B
-__global__ void matrixMultiplyShared(float *A, float *B, float *C,
-                                     int numARows, int numAColumns,
-                                     int numBRows, int numBColumns,
-                                     int numCRows, int numCColumns) {
-  //@@ Insert code to implement matrix multiplication here
-  //@@ You have to use shared memory for this MP
-  int Row = blockIdx.y * blockDim.y + threadIdx.y;
-  int Col = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void matrixMultiplyShared(deviceA, deviceB, deviceC, numARows, numAColumns, numBRows, numBColumns, numCRows, numCColumns);
+//void MatrixMulKernel(float* M, float* N, float* P, int Width){
   
-  if ((Row < numCRows) && (Col < numCColumns)) {
-    float sum = 0;
-    for (int k = 0; k < numAColumns; ++k)
-      sum += A[Row*numAColumns+k] * B[k*numCColumns+Col];
-    
-    C[Row*numCColumns+Col] = sum;
-  } 
+  //const int TILE_WIDTH = 32;
+  
+  __shared__ float subTileM [TILE_WIDTH][TILE_WIDTH];
+  __shared__ float subTileN [TILE_WIDTH][TILE_WIDTH];
+  
+  int bx = blockIdx.x;  int by = blockIdx.y;
+  int tx = threadIdx.x; int ty = threadIdx.y;    
+  // Identify the row and column of the P element to work on
+  int Row = by * TILE_WIDTH + ty;
+  int Col = bx * TILE_WIDTH + tx;
+  float Pvalue = 0;
+  // Loop over the M and N tiles required to compute the P element
+  for (int m = 0; m < Width/TILE_WIDTH; ++m) { 
+    // Collaborative loading of M and N tiles into shared memory
+    subTileM[ty][tx] = M[Row*Width + m*TILE_WIDTH+tx];
+    subTileN[ty][tx] = N[(m*TILE_WIDTH+ty)*Width+Col];
+    __syncthreads();
+    for (int k = 0; k < TILE_WIDTH; ++k)
+      Pvalue += subTileM[ty][k] * subTileN[k][tx];
+    __syncthreads();
+  }
+  P[Row*Width+Col] = Pvalue;
 }
 
 int main(int argc, char **argv) {
@@ -44,6 +55,7 @@ int main(int argc, char **argv) {
   int numCRows;    // number of rows in the matrix C (you have to set this)
   int numCColumns; // number of columns in the matrix C (you have to set
                    // this)
+  //const int TILE_WIDTH = 32;
 
   args = wbArg_read(argc, argv);
 
@@ -78,15 +90,17 @@ int main(int argc, char **argv) {
   wbTime_stop(GPU, "Copying input memory to the GPU.");
 
   //@@ Initialize the grid and block dimensions here
-  dim3 DimGrid(numCColumns/32,numCRows/32,1);
-  if (numCColumns%32) DimGrid.x++;
-  if (numCRows%32) DimGrid.y++;
-  dim3 DimBlock(32,32,1);
+  dim3 DimGrid(numCColumns/TILE_WIDTH,numCRows/TILE_WIDTH,1);
+  if (numCColumns%TILE_WIDTH) DimGrid.x++;
+  if (numCRows%TILE_WIDTH) DimGrid.y++;
+  dim3 DimBlock(TILE_WIDTH,TILE_WIDTH,1);
 
   wbTime_start(Compute, "Performing CUDA computation");
   //@@ Launch the GPU Kernel here
   matrixMultiplyShared<<<DimGrid,DimBlock>>>(deviceA, deviceB, deviceC, numARows, numAColumns, numBRows, numBColumns, numCRows, numCColumns);
+//  MatrixMulKernel<<<DimGrid,DimBlock>>>(deviceA, deviceB, deviceC, numAColumns);
 
+  
   cudaDeviceSynchronize();
   wbTime_stop(Compute, "Performing CUDA computation");
 
