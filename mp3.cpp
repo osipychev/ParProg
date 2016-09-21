@@ -10,8 +10,11 @@
     }                                                                     \
   } while (0)
 
+
 // Compute C = A * B
-__global__ void matrixMultiplyShared(float* M, float* N, float* P, int numARows, int numAColumns, int numBRows, int numBColumns, int numCRows, int numCColumns){
+__global__ void matrixMultiplyShared(float* M, float* N, float* P,
+                                     int numARows, int numAColumns, int numBRows, int numBColumns,
+                                     int numCRows, int numCColumns){
 
   const int TILE_WIDTH = 32;
 
@@ -27,16 +30,18 @@ __global__ void matrixMultiplyShared(float* M, float* N, float* P, int numARows,
   
   float Pvalue = 0;
   // Loop over the M and N tiles required to compute the P element
-  for (int m = 0; m < (numAColumns-1)/TILE_WIDTH+1; ++m) {
+  int numTiles = numAColumns/TILE_WIDTH;
+  if (numAColumns%TILE_WIDTH) numTiles++;
+  
+  for (int m = 0; m < numTiles; ++m) {
     // give 0 values to elements beyond the matrix range
     if (Row < numARows && m*TILE_WIDTH+tx < numAColumns)
-          subTileM[ty][tx] = M[Row*numAColumns + m*TILE_WIDTH+tx];
-       else
-          subTileM[ty][tx] = 0;
-       if (Col < numBColumns && m*TILE_WIDTH+ty < numBRows)
-          subTileN[ty][tx] = N[(m*TILE_WIDTH+ty)*numBColumns+Col];
-       else
-          subTileN[ty][tx] = 0;
+      subTileM[ty][tx] = M[Row*numAColumns + m*TILE_WIDTH+tx];
+    else subTileM[ty][tx] = 0;
+    
+    if (m*TILE_WIDTH+ty < numBRows && Col < numBColumns)
+      subTileN[ty][tx] = N[(m*TILE_WIDTH+ty)*numBColumns+Col];
+    else subTileN[ty][tx] = 0;
     
      __syncthreads();
       // loop over tile elements to find P value
@@ -45,6 +50,7 @@ __global__ void matrixMultiplyShared(float* M, float* N, float* P, int numARows,
     	__syncthreads();
     
   }
+  if (Row < numCRows && Col < numCColumns)
   P[Row*numCColumns+Col] = Pvalue;
 }
 
@@ -63,8 +69,9 @@ int main(int argc, char **argv) {
   int numCRows;    // number of rows in the matrix C (you have to set this)
   int numCColumns; // number of columns in the matrix C (you have to set
                    // this)
+  
   const int TILE_WIDTH = 32;
-
+  
   args = wbArg_read(argc, argv);
 
   wbTime_start(Generic, "Importing data and creating memory on host");
