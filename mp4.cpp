@@ -11,18 +11,21 @@
   } while (0)
 
 //@@ Define any useful program-wide constants here
-void convolution(float *in, float *out, const int z_size,
-                       const int y_size, const int x_size, float *kernel){
+#define KERNEL_WIDTH 3
+#define KERNEL_RADIUS 1
+
+// Serial convolution code - for test purpose
+void serialConvolution(float *in, float *out, float *kernel, const int z_size, const int y_size, const int x_size){
 for (int z_out = 0; z_out < z_size; z_out++)
   for (int y_out = 0; y_out < y_size; y_out++)
     for (int x_out = 0; x_out < x_size; x_out++) {
       float res = 0;
-      for (int z_kernel = 0; z_kernel < 3; z_kernel++)
-        for (int y_kernel = 0; y_kernel < 3; y_kernel++)
-          for (int x_kernel = 0; x_kernel < 3; x_kernel++) {
-            int z_in = z_out - 1 + z_kernel;
-            int y_in = y_out - 1 + y_kernel;
-            int x_in = x_out - 1 + x_kernel;
+      for (int z_kernel = 0; z_kernel < KERNEL_WIDTH; z_kernel++)
+        for (int y_kernel = 0; y_kernel < KERNEL_WIDTH; y_kernel++)
+          for (int x_kernel = 0; x_kernel < KERNEL_WIDTH; x_kernel++) {
+            int z_in = z_out - KERNEL_RADIUS + z_kernel;
+            int y_in = y_out - KERNEL_RADIUS + y_kernel;
+            int x_in = x_out - KERNEL_RADIUS + x_kernel;
             // Pad boundary with 0
             if (z_in >= 0 && z_in < z_size &&
                 y_in >= 0 && y_in < y_size &&
@@ -30,7 +33,6 @@ for (int z_out = 0; z_out < z_size; z_out++)
               res += kernel[z_kernel * 9 + y_kernel * 3 + x_kernel] * in[y_size*x_size*z_in + x_size*y_in + x_in];
             }
           }
-
       out[y_size*x_size*z_out + x_size*y_out + x_out] = res;
     }
 }
@@ -96,7 +98,7 @@ int main(int argc, char *argv[]) {
   //@@ Initialize grid and block dimensions here
 
   //@@ Launch the GPU kernel here
-  convolution(hostInput+3, hostOutput+3, z_size, y_size, x_size, hostKernel);
+  serialConvolution(hostInput+3, hostOutput+3, hostKernel, z_size, y_size, x_size);
   
   cudaDeviceSynchronize();
   wbTime_stop(Compute, "Doing the computation on the GPU");
