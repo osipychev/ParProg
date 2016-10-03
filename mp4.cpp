@@ -13,7 +13,7 @@
 //@@ Define any useful program-wide constants here
 #define MASK_WIDTH 3
 #define MASK_RADIUS 1
-#define TILE_WIDTH 8
+#define TILE_WIDTH 4
 #define INPUT_TILE_WIDTH (TILE_WIDTH + MASK_WIDTH - 1)
 
 // Serial convolution code - for test purpose
@@ -44,25 +44,23 @@ for (int z_out = 0; z_out < z_size; z_out++)
 
 __global__ void cudaConvolution(float *input, float *output, float *MASK, const int z_size, const int y_size, const int x_size) {
   //@@ Insert kernel code here
-  
-  
+    
   __shared__ float sharedMemoryTile [INPUT_TILE_WIDTH][INPUT_TILE_WIDTH][INPUT_TILE_WIDTH];
   
   int bx = blockIdx.x;  int by = blockIdx.y; int bz = blockIdx.z;
   int tx = threadIdx.x; int ty = threadIdx.y; int tz = threadIdx.z;
   
   // Identify the address of the input tile element
-  int z_in = bz * INPUT_TILE_WIDTH + tz - MASK_RADIUS;
-  int y_in = by * INPUT_TILE_WIDTH + ty - MASK_RADIUS;
-  int x_in = bx * INPUT_TILE_WIDTH + tx - MASK_RADIUS;
+  int z_in = bz * TILE_WIDTH + tz - MASK_RADIUS;
+  int y_in = by * TILE_WIDTH + ty - MASK_RADIUS;
+  int x_in = bx * TILE_WIDTH + tx - MASK_RADIUS;
   
   // Repeat with number of tiles
   int numTiles = x_size/TILE_WIDTH;
   if (x_size%TILE_WIDTH) numTiles++;
   
-  float res = 0.0f;
   
-  for (int m = 0; m < numTiles; ++m) {
+  //for (int m = 0; m < numTiles; ++m) {
     // give 0 values to elements beyond the matrix range
     if (z_in >= 0 && z_in < z_size &&
                 y_in >= 0 && y_in < y_size &&
@@ -77,21 +75,24 @@ __global__ void cudaConvolution(float *input, float *output, float *MASK, const 
     // do convolution for every element of the output tile
     //for (int k = 0; k < MASK_WIDTH*MASK_WIDTH*MASK_WIDTH; ++k)
       //	res += MASK[tz][ty][tx] * sharedMemoryTile[tz][ty][tx];
-    for (int y = 0; y < MASK_WIDTH; y++)
-      for (int x = 0; x < MASK_WIDTH; x++)
-        for (int z = 0; z < MASK_WIDTH; z++)
-          res += sharedMemoryTile[threadIdx.z + z][threadIdx.y + y][threadIdx.x + x] * MASK[z*MASK_WIDTH*MASK_WIDTH + y * MASK_WIDTH + x];
-
-    int y = blockIdx.y * TILE_WIDTH + threadIdx.y;
-    int x = blockIdx.x * TILE_WIDTH + threadIdx.x;
-    int z = blockIdx.z * TILE_WIDTH + threadIdx.z;
-    if (y < y_size && x < x_size && z< z_size)
-      output[x_size * y_size * z + x_size * y + x] = res;
-    
-    
-    //output[tz][ty][tx] = res;
+    float res = 0.0f;
+  
+    //for (int x = 0; x < MASK_WIDTH; x++)
+      //for (int y = 0; y < MASK_WIDTH; y++)
+        //for (int z = 0; z < MASK_WIDTH; z++)
+          //res += sharedMemoryTile[tz + z][ty + y][tx + x] * 
+          //MASK[z*MASK_WIDTH*MASK_WIDTH + y * MASK_WIDTH + x];
+        res = 1;//sharedMemoryTile[tz+1][ty+1][tx+1];
+    // find output index for resulted sum
+    //if (tx < TILE_WIDTH && ty < TILE_WIDTH && tz < TILE_WIDTH){
+      //int x_out = bx * INPUT_TILE_WIDTH + tx +1;
+      //int y_out = by * INPUT_TILE_WIDTH + ty +1;
+      //int z_out = bz * INPUT_TILE_WIDTH + tz +1;
+      if (y_out < y_size && x_out < x_size && z_out < z_size)
+        output[x_size * y_size * z_out + x_size * y_out + x_out] = res;
+    //}
     __syncthreads();
-  }
+  //}
 }
 
 int main(int argc, char *argv[]) {
@@ -140,7 +141,7 @@ int main(int argc, char *argv[]) {
   // Recall that the first three elements of hostInput are dimensions and
   // do
   // not need to be copied to the gpu
-  wbCheck(cudaMemcpy(deviceInput, hostInput+3, z_size * y_size * x_size * sizeof(float), cudaMemcpyHostToDevice)); // copy the variables into gpu memory
+  wbCheck(cudaMemcpy(deviceInput, &hostInput[3], z_size * y_size * x_size * sizeof(float), cudaMemcpyHostToDevice)); // copy the variables into gpu memory
   wbCheck(cudaMemcpy(deviceMask, hostKernel, MASK_WIDTH*MASK_WIDTH*MASK_WIDTH*sizeof(float),cudaMemcpyHostToDevice));
   
   wbTime_stop(Copy, "Copying data to the GPU");
@@ -148,7 +149,7 @@ int main(int argc, char *argv[]) {
   wbTime_start(Compute, "Doing the computation on the GPU");
   //@@ Initialize grid and block dimensions here
   dim3 dimGrid(ceil((float)z_size/TILE_WIDTH), ceil((float)y_size/TILE_WIDTH),ceil((float)x_size/TILE_WIDTH));
-  dim3 dimBlock(TILE_WIDTH, TILE_WIDTH, TILE_WIDTH);
+  dim3 dimBlock(INPUT_TILE_WIDTH, INPUT_TILE_WIDTH, INPUT_TILE_WIDTH);
     
   //@@ Launch the GPU kernel here
   //serialConvolution(hostInput+3, hostOutput+3, hostKernel, z_size, y_size, x_size);
@@ -160,12 +161,16 @@ int main(int argc, char *argv[]) {
   //@@ Copy the device memory back to the host here
   // Recall that the first three elements of the output are the dimensions
   // and should not be set here (they are set below)
-  wbCheck(cudaMemcpy(hostOutput + 3, deviceOutput, z_size * y_size * x_size * sizeof(float), cudaMemcpyDeviceToHost));
+  wbCheck(cudaMemcpy(&hostOutput[3], deviceOutput, z_size * y_size * x_size * sizeof(float), cudaMemcpyDeviceToHost));
   wbTime_stop(Copy, "Copying data from the GPU");
 
   wbTime_stop(GPU, "Doing GPU Computation (memory + compute)");
 
   // Set the output dimensions for correctness checking
+  wbLog(TRACE, "The result is: ", hostInput[0], "x", hostInput[1], "x", hostInput[2], "x", hostInput[3]);
+  //wbLog(TRACE, "The result is: ", hostKernel[0], "x", hostKernel[1], "x", hostKernel[2], "x", hostKernel[3]);
+  wbLog(TRACE, "The result is: ", hostOutput[4], "x", hostOutput[5], "x", hostOutput[6], "x", hostOutput[7]);
+  
   hostOutput[0] = z_size;
   hostOutput[1] = y_size;
   hostOutput[2] = x_size;
