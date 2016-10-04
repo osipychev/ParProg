@@ -27,7 +27,6 @@ for (int z_out = 0; z_out < z_size; z_out++)
             int z_in = z_out - MASK_RADIUS + z_kernel;
             int y_in = y_out - MASK_RADIUS + y_kernel;
             int x_in = x_out - MASK_RADIUS + x_kernel;
-            // Pad boundary with 0
             if (z_in >= 0 && z_in < z_size &&
                 y_in >= 0 && y_in < y_size &&
                 x_in >= 0 && x_in < x_size) {
@@ -49,7 +48,7 @@ __global__ void cudaConvolution(float *input, float *output, const int z_size, c
   int bx = blockIdx.x;  int by = blockIdx.y; int bz = blockIdx.z;
   int tx = threadIdx.x; int ty = threadIdx.y; int tz = threadIdx.z;
   
-  // Identify the address of the input tile element (shared memory only)
+  // Identify the address of the input tile element in shared memory
   int z_in = bz * TILE_WIDTH + tz;
   int y_in = by * TILE_WIDTH + ty;
   int x_in = bx * TILE_WIDTH + tx;
@@ -61,7 +60,7 @@ __global__ void cudaConvolution(float *input, float *output, const int z_size, c
     sharedMemoryTile[tz][ty][tx] = input[y_size*x_size*z_in + x_size*y_in + x_in];
   else
     sharedMemoryTile[tz][ty][tx] = 0;
-  
+    
   __syncthreads();
     
   // do convolution for every element of the output tile
@@ -101,9 +100,9 @@ __global__ void cudaConvolution(float *input, float *output, const int z_size, c
         //when value is known - add it the corresponding output value
         res += value * MASK[z*9 + y*3 + x];
       }
-  
-  output[x_size * y_size * z_in + x_size * y_in + x_in] = res;
-  
+  if (z_in < z_size && y_in < y_size && x_in < x_size)
+    output[x_size * y_size * z_in + x_size * y_in + x_in] = res;
+ 
   __syncthreads();
 }
 
@@ -180,10 +179,7 @@ int main(int argc, char *argv[]) {
   wbTime_stop(GPU, "Doing GPU Computation (memory + compute)");
 
   // Set the output dimensions for correctness checking
-  //wbLog(TRACE, "The result is: ", hostInput[0], "x", hostInput[1], "x", hostInput[2], "x", hostInput[3]);
-  //wbLog(TRACE, "The result is: ", hostKernel[0], "x", hostKernel[1], "x", hostKernel[2], "x", hostKernel[3]);
-  //wbLog(TRACE, "The result is: ", hostOutput[4], "x", hostOutput[5], "x", hostOutput[6], "x", hostOutput[7]);
-  
+ 
   hostOutput[0] = z_size;
   hostOutput[1] = y_size;
   hostOutput[2] = x_size;
