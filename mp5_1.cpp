@@ -19,6 +19,7 @@
 __global__ void total(float *input, float *output, const int len) {
   
   __shared__ float sharedMemory [BLOCK_SIZE];
+  __shared__ float temp [BLOCK_SIZE]; // double buffering
 
   //@@ Load a segment of the input vector into shared memory
   //@@ Traverse the reduction tree
@@ -32,10 +33,25 @@ __global__ void total(float *input, float *output, const int len) {
     // copy input to shared memory
     sharedMemory[tx] = input[x_in];
   else sharedMemory[tx] = 0;
-    
   __syncthreads();
+  //printf("x_in: %i, tx: %i, bx: %i, val: %f \n", x_in, tx, bx, sharedMemory[tx]);
   
-  output[x_in] = sharedMemory[tx];
+  for (int i = 1; i < (BLOCK_SIZE); i=i*2)
+  {
+    // reduction tree, add value according to the stride and put it into temp 
+    if (tx > i-1) temp[tx] = sharedMemory[tx] + sharedMemory[tx - i];
+    else temp[tx] = sharedMemory[tx];
+    __syncthreads();
+    
+    // save temp values back to shared variable when the stride is done
+    sharedMemory[tx] = temp[tx];
+    __syncthreads();
+    
+    //print the final result for each block evolving in stride loop
+    //if (tx == BLOCK_SIZE-1) printf("tx: %i, i: %i, val: %f \n", tx, i, sharedMemory[BLOCK_SIZE-1]);
+  }
+  
+  output[bx] = sharedMemory[BLOCK_SIZE-1];
   
 }
 
@@ -55,10 +71,10 @@ int main(int argc, char **argv) {
   hostInput =
       (float *)wbImport(wbArg_getInputFile(args, 0), &numInputElements);
 
-  //numOutputElements = numInputElements / (BLOCK_SIZE << 1);
-  //if (numInputElements % (BLOCK_SIZE << 1)) {
-    //numOutputElements++;
-  //}
+  numOutputElements = numInputElements / (BLOCK_SIZE << 1);
+  if (numInputElements % (BLOCK_SIZE << 1)) {
+    numOutputElements++;
+  }
   numOutputElements = numInputElements;
   hostOutput = (float *)malloc(numOutputElements * sizeof(float));
 
