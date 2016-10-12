@@ -24,39 +24,44 @@ __global__ void scan(float *input, float *output, int len) {
   //@@ You may need multiple kernel calls; write your kernels before this
   //@@ function and call them from here
   
-  __shared__ float sharedMemory [2*BLOCK_SIZE];
+  __shared__ float sharedMemory[2*BLOCK_SIZE];
 
   int bx = blockIdx.x; int tx = threadIdx.x;
-  int x_in = bx * BLOCK_SIZE + tx;
+  int x_in = bx * BLOCK_SIZE*2 + tx;
   
-  // give 0 values to elements beyond the matrix range
-  if (x_in >= 0 && x_in < len) sharedMemory[tx] = input[x_in];
+  // give 0 values to elements beyond the matrix range load both left and right block elements
+  if (x_in >= 0 && x_in < len)
+  {
+    sharedMemory[tx] = input[x_in];
+    sharedMemory[tx + BLOCK_SIZE] = input[x_in + BLOCK_SIZE];
+    //printf("x_in: %i, val: %f \n", x_in, sharedMemory[x_in]);
+    //printf("x_in: %i, val: %f \n", x_in + BLOCK_SIZE, sharedMemory[tx + BLOCK_SIZE]);
+  }
   else sharedMemory[tx] = 0;
   __syncthreads();
   
-  for (int stride = 1; stride <= (BLOCK_SIZE); stride = stride*2)
+  for (int stride = 1; stride <= BLOCK_SIZE; stride = stride*2)
   {
     int index = (threadIdx.x+1)*stride*2 - 1; 
     if(index < 2*BLOCK_SIZE) sharedMemory[index] += sharedMemory[index-stride];
     
     __syncthreads();
-   }
+    //if (tx == 0) printf("tx: %i, val: %f \n", tx, sharedMemory[index]); // active thread (0) printout
+  }
   
   for (int stride = BLOCK_SIZE/2; stride > 0;stride /= 2)
   {
-    __syncthreads();
     int index = (threadIdx.x+1)*stride*2 - 1;
-    if(index+stride < 2*BLOCK_SIZE) 
+    if(index + stride< 2*BLOCK_SIZE) 
     { 
       sharedMemory[index + stride] += sharedMemory[index]; 
     }
+    __syncthreads();
   }
-  __syncthreads(); 
-  if (x_in < len) output[x_in] = sharedMemory[threadIdx.x];
+  
+  if (x_in < len) output[x_in] = sharedMemory[tx];
   if (x_in+blockDim.x < len) output[x_in+blockDim.x] = sharedMemory[threadIdx.x+blockDim.x];
-   //print the final result for each block evolving in stride loop
-    //if (tx == BLOCK_SIZE-1) printf("tx: %i, i: %i, val: %f \n", tx, stride, sharedMemory[BLOCK_SIZE-1]);
-  //output[bx] = sharedMemory[BLOCK_SIZE-1];
+
 }
 
 int main(int argc, char **argv) {
@@ -92,8 +97,8 @@ int main(int argc, char **argv) {
   wbTime_stop(GPU, "Copying input memory to the GPU.");
 
   //@@ Initialize the grid and block dimensions here
-  dim3 dimGrid(numElements/BLOCK_SIZE, 1, 1);
-  if (numElements%BLOCK_SIZE) dimGrid.x++;
+  dim3 dimGrid(numElements/(2*BLOCK_SIZE), 1, 1);
+  if (numElements%(2*BLOCK_SIZE)) dimGrid.x++;
   dim3 dimBlock(BLOCK_SIZE, 1, 1);
 
   wbTime_start(Compute, "Performing CUDA computation");
@@ -107,6 +112,12 @@ int main(int argc, char **argv) {
   wbTime_start(Copy, "Copying output memory to the CPU");
   wbCheck(cudaMemcpy(hostOutput, deviceOutput, numElements * sizeof(float),
                      cudaMemcpyDeviceToHost));
+  float *add_value_p;
+  add_value_p = (float *)malloc(numElements * sizeof(float));
+  for (int i = 0; i < dimGrid.x; i++) add_value_p[i] = hostOutput[2*BLOCK_SIZE*i-1] + hostOutput[4*BLOCK_SIZE*i-2];
+  
+  for (int i = 0; i < numElements; i++) hostOutput[i] += add_value_p[i/(2*BLOCK_SIZE)];
+  
   wbTime_stop(Copy, "Copying output memory to the CPU");
 
   wbTime_start(GPU, "Freeing GPU Memory");
