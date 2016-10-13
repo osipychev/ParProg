@@ -113,8 +113,12 @@ int main(int argc, char **argv) {
   wbCheck(cudaMemcpy(hostOutput, deviceOutput, numElements * sizeof(float),
                      cudaMemcpyDeviceToHost));
   float *add_value_p;
-  add_value_p = (float *)malloc(numElements * sizeof(float));
-  for (int i = 0; i < dimGrid.x; i++) add_value_p[i] = hostOutput[2*BLOCK_SIZE*i-1] + hostOutput[4*BLOCK_SIZE*i-2];
+  add_value_p = (float *)malloc(dimGrid.x * sizeof(float));
+  add_value_p[0] = 0;
+  for (int i = 1; i < dimGrid.x; i++){
+    add_value_p[i] = add_value_p[i-1] + hostOutput[2*BLOCK_SIZE*i-1];
+    printf("%i %f \n",i,add_value_p[i]);
+  } 
   
   for (int i = 0; i < numElements; i++) hostOutput[i] += add_value_p[i/(2*BLOCK_SIZE)];
   
