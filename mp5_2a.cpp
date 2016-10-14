@@ -18,23 +18,23 @@
     }                                                                     \
   } while (0)
 
+// Addition kernel, for final hiearchical step
 __global__ void vecAddKernel(float *in_d, float *out_d, int len) {
   
   __shared__ float sharedMemory[2*BLOCK_SIZE];
   
   int bx = blockIdx.x; int tx = threadIdx.x;
-  int index = bx * 2*BLOCK_SIZE + tx; // convert thread id into vector index
+  int index = bx * blockDim.x + tx; // convert thread id into vector index
   
-  if (index<len) sharedMemory[tx] = in_d[index]; // copy to shared memory
+  if (index<len) sharedMemory[tx] = in_d[index]; // copy values to shared memory
   
-  float temp = 0.0;
-  if (bx>0) for (int i = 1; i <= bx; i++) temp += in_d[i*2*BLOCK_SIZE - 1];
+  float temp = 0.0; //% find the value of the last element of the previos block
+  if (bx > 0) for (int i = 1; i <= bx; i++) temp += in_d[i * 2 * BLOCK_SIZE - 1];
   //printf("%f \n", temp);
    
-  if (index<len) sharedMemory[tx] += temp; // do addition for threads which are in vector
+  sharedMemory[tx] += temp; // do addition for threads which require hierarchical addition
 
-  out_d[index] = sharedMemory[tx];
-
+  if (index<len) out_d[index] = sharedMemory[tx]; // copy shared values back
 }
 
 __global__ void scanKernel(float *input, float *output, int len) {
@@ -46,40 +46,39 @@ __global__ void scanKernel(float *input, float *output, int len) {
   __shared__ float sharedMemory[2*BLOCK_SIZE];
 
   int bx = blockIdx.x; int tx = threadIdx.x;
-  int x_in = bx * BLOCK_SIZE*2 + tx;
+  int x_in = bx * blockDim.x * 2 + tx;
   
-  // give 0 values to elements beyond the matrix range load both left and right block elements
-  if (x_in >= 0 && x_in < len)
-  {
-    sharedMemory[tx] = input[x_in];
-    sharedMemory[tx + BLOCK_SIZE] = input[x_in + BLOCK_SIZE];
-    //printf("x_in: %i, val: %f \n", x_in, sharedMemory[x_in]);
-    //printf("x_in: %i, val: %f \n", x_in + BLOCK_SIZE, sharedMemory[tx + BLOCK_SIZE]);
-  }
+  // copy the first block to shared memory
+  if (x_in < len) sharedMemory[tx] = input[x_in];
   else sharedMemory[tx] = 0;
+  
+  // copy the second block to shared memory
+  if (x_in + BLOCK_SIZE < len) sharedMemory[tx + BLOCK_SIZE] = input[x_in + BLOCK_SIZE];
+  else sharedMemory[tx + BLOCK_SIZE] = 0;
+  
   __syncthreads();
   
-  for (int stride = 1; stride <= BLOCK_SIZE; stride = stride*2)
+  // perform the reduction step of Brent-Kung algorithm
+  for (int stride = 1; stride <= BLOCK_SIZE; stride *= 2)
   {
-    int index = (threadIdx.x+1)*stride*2 - 1; 
-    if(index < 2*BLOCK_SIZE) sharedMemory[index] += sharedMemory[index-stride];
+    int index = (tx+1) * stride * 2 - 1; 
+    if(index < 2 * BLOCK_SIZE) sharedMemory[index] += sharedMemory[index-stride];
     
     __syncthreads();
-    //if (tx == 0) printf("tx: %i, val: %f \n", tx, sharedMemory[index]); // active thread (0) printout
   }
   
-  for (int stride = BLOCK_SIZE/2; stride > 0;stride /= 2)
+  // perform the inverse step of Brent-Kung algorithm
+  for (int stride = BLOCK_SIZE / 2; stride > 0; stride /= 2)
   {
-    int index = (threadIdx.x+1)*stride*2 - 1;
-    if(index + stride< 2*BLOCK_SIZE) 
-    { 
-      sharedMemory[index + stride] += sharedMemory[index]; 
-    }
+    int index = (tx+1) * stride * 2 - 1;
+    if(index + stride < 2 * BLOCK_SIZE) sharedMemory[index + stride] += sharedMemory[index]; 
+    
     __syncthreads();
   }
   
+  // save first and second blocks from shared memory to global
   if (x_in < len) output[x_in] = sharedMemory[tx];
-  if (x_in+blockDim.x < len) output[x_in+blockDim.x] = sharedMemory[threadIdx.x+blockDim.x];
+  if (x_in + BLOCK_SIZE < len) output[x_in+BLOCK_SIZE] = sharedMemory[tx+BLOCK_SIZE];
 
 }
 
@@ -123,17 +122,21 @@ int main(int argc, char **argv) {
   wbTime_start(Compute, "Performing CUDA computation");
   //@@ Modify this to complete the functionality of the scan
   //@@ on the deivce
+  
+  // perform Brent Kung addition
   scanKernel<<<dimGrid, dimBlock>>>(deviceInput, deviceOutput, numElements);
   
-  dimBlock.x = 2*BLOCK_SIZE;
-  vecAddKernel<<<dimGrid, dimBlock>>>(deviceOutput, deviceInput, numElements);
-  
+  //perform hierarchical addition using cuda core (every thread will add the sum of the previous block)
+  dimBlock.x = 2*BLOCK_SIZE; // change the block size - we need thread for every element
+  vecAddKernel<<<dimGrid, dimBlock>>>(deviceOutput, deviceInput, numElements); 
+  // I swap pointers since deviceOutput is the new input, and deviceInput is no longer needed
   
   cudaDeviceSynchronize();
   wbTime_stop(Compute, "Performing CUDA computation");
 
   wbTime_start(Copy, "Copying output memory to the CPU");
   wbCheck(cudaMemcpy(hostOutput, deviceInput, numElements * sizeof(float), cudaMemcpyDeviceToHost));
+  // copy deviceInput since it is the new output back to the host 
   
   wbTime_stop(Copy, "Copying output memory to the CPU");
 
