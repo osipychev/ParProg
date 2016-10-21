@@ -36,10 +36,10 @@ __global__ void total(float *input, float *output, const int len) {
   __syncthreads();
   //printf("x_in: %i, tx: %i, bx: %i, val: %f \n", x_in, tx, bx, sharedMemory[tx]);
   
-  for (int i = 1; i < (BLOCK_SIZE); i=i*2)
+  for (int stride = 1; stride < (BLOCK_SIZE); stride *= 2)
   {
     // reduction tree, add value according to the stride and put it into temp 
-    if (tx > i-1) temp[tx] = sharedMemory[tx] + sharedMemory[tx - i];
+    if (tx > stride-1) temp[tx] = sharedMemory[tx] + sharedMemory[tx - stride];
     else temp[tx] = sharedMemory[tx];
     __syncthreads();
     
