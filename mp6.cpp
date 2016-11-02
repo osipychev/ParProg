@@ -13,7 +13,7 @@
   } while (0)
 
 #define HISTOGRAM_LENGTH 256
-#define BLOCK_SIZE 256
+#define BLOCK_SIZE 32
 
 //@@ insert code here
 __global__ void float2charKernel(float *inputImagePtr, unsigned char *outputImagePtr, int width, int height, int channels){
@@ -25,8 +25,9 @@ __global__ void float2charKernel(float *inputImagePtr, unsigned char *outputImag
   outputImagePtr[index] = (unsigned char) (255 * inputImagePtr[index]);
   outputImagePtr[index + 1] = (unsigned char) (255 * inputImagePtr[index + 1]);
   outputImagePtr[index + 2] = (unsigned char) (255 * inputImagePtr[index + 2]);
-  printf("%f \n",inputImagePtr[index]);
+  //printf("x:%i, y:%i, R:%d, G:%d, B:%d \n",indX,indY,outputImagePtr[index],outputImagePtr[index+1],outputImagePtr[index+2]);
 }
+
 
 __global__ void rgb2greyKernel(unsigned char *inputImagePtr, unsigned char *outputImagePtr, int width, int height, int channels){
   
@@ -38,9 +39,12 @@ __global__ void rgb2greyKernel(unsigned char *inputImagePtr, unsigned char *outp
   unsigned char g = inputImagePtr[index + 1];
   unsigned char b = inputImagePtr[index + 2];
   
-  if (indX < width && indY < height)
+  if (indX < width && indY < height) {
     outputImagePtr[width * indY + indX] = (unsigned char) (0.21*r + 0.71*g + 0.07*b);
+    //printf("x: %i, y: %i, %d \n",indX,indY,outputImagePtr[width * indY + indX]);
+  }
 }
+
 
 __global__ void histKernel(unsigned char *inputImagePtr, float *histPtr,  int width, int height){
   
@@ -50,14 +54,20 @@ __global__ void histKernel(unsigned char *inputImagePtr, float *histPtr,  int wi
   int indY = blockIdx.y * blockDim.y + threadIdx.y;
   int index = width * indY + indX;
   
-  if (index < HISTOGRAM_LENGTH) histogramShared[indX] = 0.0;
+  if (index < HISTOGRAM_LENGTH) histPtr[indX] = 0.0;
   __syncthreads();
   
-  atomicAdd(&histogramShared[inputImagePtr[index]],1);
+  atomicAdd(&histPtr[(int)inputImagePtr[index]],1);
   __syncthreads();
+  //printf("value: %d \n",inputImagePtr[index]);
   
-  if (index < HISTOGRAM_LENGTH) histPtr[index] = histogramShared[index];
+  if (index < HISTOGRAM_LENGTH) {
+    //histPtr[index] = histogramShared[index]/(float)(width*height);
+    //printf("hist: %i, value: %f, prob: %f \n",index, histogramShared[index], histPtr[index]);
+    printf("%f \n",histPtr[index]);
+  } 
 }
+
 
 __global__ void scanKernel(float *input, float *output, int len, int numOfPix) {
     
@@ -148,12 +158,13 @@ int main(int argc, char **argv) {
   if (imageHeight%BLOCK_SIZE) dimGrid.y++;
   dim3 dimBlock(BLOCK_SIZE,BLOCK_SIZE,1);
   
-  wbTime_start(Generic, "Importing data and creating memory on host");
+  wbTime_start(Generic, "All CUDA computations:");
   
   float2charKernel<<<dimGrid, dimBlock>>>(deviceInputImage, deviceColorImage, imageWidth, imageHeight, imageChannels);
   rgb2greyKernel<<<dimGrid, dimBlock>>>(deviceColorImage, deviceGreyImage, imageWidth, imageHeight, imageChannels);
   histKernel<<<dimGrid, dimBlock>>>(deviceGreyImage, deviceHistogram, imageWidth, imageHeight);
-  wbTime_stop(Generic, "Importing data and creating memory on host");
+  
+  wbTime_stop(Generic, "All CUDA computations:");
 
   //unsigned char *histHost;
   //histHost = (unsigned char *)malloc(HISTOGRAM_LENGTH * sizeof(float));
