@@ -44,45 +44,74 @@ __global__ void rgb2greyKernel(unsigned char *inputImagePtr, unsigned char *outp
 }
 
 
-__global__ void histKernel(unsigned char *inputImagePtr, float *histPtr,  int width, int height){
+__global__ void histKernel2D(unsigned char *inputImagePtr, float *histPtr,  int width, int height){
   
   __shared__ float histogramShared[HISTOGRAM_LENGTH];
   
   int indX = blockIdx.x * blockDim.x + threadIdx.x; 
   int indY = blockIdx.y * blockDim.y + threadIdx.y;
   int index = width * indY + indX;
-  
-  if (index < HISTOGRAM_LENGTH) {
-    histogramShared[indX] = 0.0;
-    histPtr[indX] = 0.0;
+   
+  if (threadIdx.x * threadIdx.y < HISTOGRAM_LENGTH) {
+    histogramShared[threadIdx.x * threadIdx.y] = 0.0;
+    histPtr[threadIdx.x * threadIdx.y] = 0.0;
   }
   __syncthreads();
   
-  int stride = blockDim.x * gridDim.x;    
-  while (indX < width*hight) {
-    atomicAdd( &(histogramShared[inputImagePtr[i]]), 1);
-    indX += stride;
-  }
-                              
-  //atomicAdd(&histogramShared[inputImagePtr[index]],1);
-  //if (index<16) printf("ind: %i, val: %d, hist: %d", index, inputImagePtr[index],histPtr[inputImagePtr[index]]);
-  //atomicAdd(&histPtr[(int)inputImagePtr[index]],1);
+  atomicAdd( &(histogramShared[inputImagePtr[index]]), 1);
   __syncthreads();
-  //if (index<16) printf("ind: %i, val: %d, hist: %d \n", index, inputImagePtr[index],histPtr[inputImagePtr[index]]);
   
+  if (threadIdx.x * threadIdx.y < 256)
+    atomicAdd( &(histPtr[threadIdx.x * threadIdx.y]), histogramShared[threadIdx.x * threadIdx.y]);
   
-  
-  if (indX < HISTOGRAM_LENGTH) {
-    atomicAdd(&histPtr[indX],histogramShared[index]);
-  }
-  
-  __syncthreads();
-  //if (index < HISTOGRAM_LENGTH) printf(" %f, ", histPtr[index]);
+  //histPtr[index] = histPtr[index]/(float)(width*height);
+   __syncthreads();
+  if (index<256) printf("%f \n", histPtr[index]);
 }
 
-__global__ void scanKernel(float *input, float *output, int len, int numOfPix) {
+
+__global__ void histKernel(unsigned char *inputImagePtr, float *histPtr,  int width, int height){
+  
+  __shared__ float histogramShared[HISTOGRAM_LENGTH];
+  
+  if (threadIdx.x < 256) {
+    histogramShared[threadIdx.x] = 0;
+    histPtr[threadIdx.x] = 0;
+  }
+  __syncthreads();
+  
+  int i = threadIdx.x + blockIdx.x * blockDim.x;
+  int stride = blockDim.x * gridDim.x;    
+  while (i < width*height) {
+    atomicAdd( &(histogramShared[inputImagePtr[i]]), 1);
+    i += stride;    
+  }
+  
+  __syncthreads();
+  if (threadIdx.x < 256)
+    atomicAdd( &(histPtr[threadIdx.x]), histogramShared[threadIdx.x] );
+
+  if (threadIdx.x<256 && blockIdx.x == 0 && blockIdx.y == 0) printf("%f \n", histPtr[threadIdx.x]);
+}
+
+
+void histSerial(unsigned char *inputImagePtr, float *histPtr,  int width, int height){
+
+  for (int i = 0; i < 256; i++) histPtr[i] = 0;
     
-  __shared__ float sharedMemory[2*BLOCK_SIZE];
+  for (int i = 0; i < width*height; i++){
+    histPtr[inputImagePtr[i]] += 1;
+  }
+  for (int i = 0; i < 256; i++) {
+    histPtr[i] /= (float)(width*height);
+    //printf("%f \n", histPtr[i]);
+  }
+}
+
+
+__global__ void scanKernel(float *input, float *output, int len) {
+    
+  __shared__ float sharedMemory[HISTOGRAM_LENGTH];
 
   int bx = blockIdx.x; int tx = threadIdx.x;
   int x_in = bx * blockDim.x * 2 + tx;
@@ -92,33 +121,65 @@ __global__ void scanKernel(float *input, float *output, int len, int numOfPix) {
   else sharedMemory[tx] = 0;
   
   // copy the second block to shared memory
-  if (x_in + BLOCK_SIZE < len) sharedMemory[tx + BLOCK_SIZE] = input[x_in + BLOCK_SIZE];
-  else sharedMemory[tx + BLOCK_SIZE] = 0;
+  if (x_in + blockDim.x < len) sharedMemory[tx + blockDim.x] = input[x_in + blockDim.x];
+  else sharedMemory[tx + blockDim.x] = 0;
   
   __syncthreads();
   
   // perform the reduction step of Brent-Kung algorithm
-  for (int stride = 1; stride <= BLOCK_SIZE; stride *= 2)
+  for (int stride = 1; stride <= blockDim.x; stride *= 2)
   {
     int index = (tx+1) * stride * 2 - 1; 
-    if(index < 2 * BLOCK_SIZE) sharedMemory[index] += sharedMemory[index-stride];
+    if(index < 2 * blockDim.x) sharedMemory[index] += sharedMemory[index-stride];
     
     __syncthreads();
   }
   
   // perform the inverse step of Brent-Kung algorithm
-  for (int stride = BLOCK_SIZE / 2; stride > 0; stride /= 2)
+  for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
   {
     int index = (tx+1) * stride * 2 - 1;
-    if(index + stride < 2 * BLOCK_SIZE) sharedMemory[index + stride] += sharedMemory[index]; 
+    if(index + stride < 2 * blockDim.x) sharedMemory[index + stride] += sharedMemory[index]; 
     
     __syncthreads();
   }
   
   // save first and second blocks from shared memory to global
-  if (x_in < len) output[x_in] = sharedMemory[tx]/(float)numOfPix;
-  if (x_in + BLOCK_SIZE < len) output[x_in+BLOCK_SIZE] = sharedMemory[tx+BLOCK_SIZE]/(float)numOfPix;
+  if (x_in < len) output[x_in] = sharedMemory[tx];
+  if (x_in + blockDim.x < len) output[x_in+blockDim.x] = sharedMemory[tx+blockDim.x];
+  //printf("%f \n",sharedMemory[tx]);
+  //printf("%f \n",sharedMemory[tx+blockDim.x]);
+}
 
+
+
+__global__ void histCorKernel(unsigned char *imagePtr, float *histPtr, int width, int height, int channels){
+  
+  int indX = blockIdx.x * blockDim.x + threadIdx.x; 
+  int indY = blockIdx.y * blockDim.y + threadIdx.y;
+  int index = width * channels * indY + indX;
+
+  imagePtr[index] *= min(max(255*(cdf[val] - cdfmin)/(1 - cdfmin), 0), 255);
+  imagePtr[index + 1] *=
+  imagePtr[index + 2] *=
+  //if (index == 0) printf("%u \n",outputImagePtr[index]);
+}
+
+for ii from 0 to (width * height * channels) do
+    image[ii] = correct_color(ucharImage[ii])
+end
+
+
+__global__ void char2floatKernel(unsigned char *inputImagePtr, float *outputImagePtr, int width, int height, int channels){
+  
+  int indX = blockIdx.x * blockDim.x + threadIdx.x; 
+  int indY = blockIdx.y * blockDim.y + threadIdx.y;
+  int index = width * channels * indY + indX;
+
+  outputImagePtr[index] = (float)inputImagePtr[index])/255.0;
+  outputImagePtr[index + 1] = (float)inputImagePtr[index + 1])/255.0;
+  outputImagePtr[index + 2] = (float)inputImagePtr[index + 2])/255.0;
+  //if (index == 0) printf("%u \n",outputImagePtr[index]);
 }
 
 int main(int argc, char **argv) {
@@ -154,14 +215,14 @@ int main(int argc, char **argv) {
   //@@ insert code here
   hostInputImageData = wbImage_getData(inputImage);
   
-  // allocate memory
+  // allocate memory in cuda device
   wbCheck(cudaMalloc((void **) &deviceInputImage, imageWidth * imageHeight * imageChannels * sizeof(float))); // allocate the value in the gpu memory and print an error code
   wbCheck(cudaMalloc((void **) &deviceColorImage, imageWidth * imageHeight * imageChannels * sizeof(unsigned char))); // allocate the value in the gpu memory and print an error code
   wbCheck(cudaMalloc((void **) &deviceGreyImage, imageWidth * imageHeight * sizeof(unsigned char))); // allocate the value in the gpu memory and print an error code
   wbCheck(cudaMalloc((void **) &deviceHistogram, HISTOGRAM_LENGTH * sizeof(float))); // allocate the value in the gpu memory and print an error code
-  //wbCheck(cudaMalloc((void **) &deviceHistogramCDF, HISTOGRAM_LENGTH * sizeof(float))); // allocate the value in the gpu memory and print an error code
+  wbCheck(cudaMalloc((void **) &deviceHistogramCDF, HISTOGRAM_LENGTH * sizeof(float))); // allocate the value in the gpu memory and print an error code
   
-  //copy memory to device
+  //copy input image to cuda device
   wbCheck(cudaMemcpy(deviceInputImage, hostInputImageData,imageWidth * imageHeight * imageChannels * sizeof(float), cudaMemcpyHostToDevice)); // copy the variables into gpu memory
    
   dim3 dimGrid(imageWidth/BLOCK_SIZE,imageHeight/BLOCK_SIZE,1);
@@ -170,10 +231,24 @@ int main(int argc, char **argv) {
   dim3 dimBlock(BLOCK_SIZE,BLOCK_SIZE,1);
   
   wbTime_start(Generic, "All kernel runs");
-  
+  //float to char cuda
   float2charKernel<<<dimGrid, dimBlock>>>(deviceInputImage, deviceColorImage, imageWidth, imageHeight, imageChannels);
+  // grb to grey cuda
   rgb2greyKernel<<<dimGrid, dimBlock>>>(deviceColorImage, deviceGreyImage, imageWidth, imageHeight, imageChannels);
-  histKernel<<<dimGrid, dimBlock>>>(deviceGreyImage, deviceHistogram, imageWidth, imageHeight);
+  
+  // histogram serial
+  float histHost[256];
+  unsigned char image[imageWidth*imageHeight];
+  cudaMemcpy(image, deviceGreyImage, imageWidth*imageHeight * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+  histSerial(image, histHost, imageWidth, imageHeight);
+  //histKernel<<<imageHeight*imageWidth/256, 256>>>(deviceGreyImage, deviceHistogram, imageWidth, imageHeight);
+  
+  // scan histogram cuda
+  wbCheck(cudaMemcpy(deviceHistogram, histHost, HISTOGRAM_LENGTH * sizeof(float), cudaMemcpyHostToDevice)); // copy the variables into gpu memory
+  scanKernel<<<1, HISTOGRAM_LENGTH/2>>>(deviceHistogram, deviceHistogramCDF, HISTOGRAM_LENGTH);
+  
+  
+  
   wbTime_stop(Generic, "All kernel runs");
 
   //unsigned char *histHost;
