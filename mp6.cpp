@@ -152,22 +152,17 @@ __global__ void scanKernel(float *input, float *output, int len) {
 }
 
 
-
-__global__ void histCorKernel(unsigned char *imagePtr, float *histPtr, int width, int height, int channels){
+__global__ void histCorKernel(unsigned char *imagePtr, float *histCdfPtr, int width, int height, int channels){
   
   int indX = blockIdx.x * blockDim.x + threadIdx.x; 
   int indY = blockIdx.y * blockDim.y + threadIdx.y;
   int index = width * channels * indY + indX;
 
-  imagePtr[index] *= min(max(255*(cdf[val] - cdfmin)/(1 - cdfmin), 0), 255);
-  imagePtr[index + 1] *=
-  imagePtr[index + 2] *=
+  for (int i=0; i<3; i++)
+    imagePtr[index+i] *= min(max(255*(histCdfPtr[index+i] - histCdfPtr[0])/(1 - histCdfPtr[0]), 0), 255);
+  
   //if (index == 0) printf("%u \n",outputImagePtr[index]);
 }
-
-for ii from 0 to (width * height * channels) do
-    image[ii] = correct_color(ucharImage[ii])
-end
 
 
 __global__ void char2floatKernel(unsigned char *inputImagePtr, float *outputImagePtr, int width, int height, int channels){
@@ -247,10 +242,14 @@ int main(int argc, char **argv) {
   wbCheck(cudaMemcpy(deviceHistogram, histHost, HISTOGRAM_LENGTH * sizeof(float), cudaMemcpyHostToDevice)); // copy the variables into gpu memory
   scanKernel<<<1, HISTOGRAM_LENGTH/2>>>(deviceHistogram, deviceHistogramCDF, HISTOGRAM_LENGTH);
   
+  histCorKernel<<<dimGrid, dimBlock>>>(deviceColorImage, deviceHistogramCDF, imageWidth, imageHeight, imageChannels);
+  char2floatKernel<<<dimGrid, dimBlock>>>(deviceColorImage, deviceInputImage, imageWidth, imageHeight, imageChannels);
   
-  
+  cudaDeviceSynchronize();
   wbTime_stop(Generic, "All kernel runs");
 
+  wbCheck(cudaMemcpy(hostInputImageData, deviceInputImage, imageWidth * imageHeight * imageChannels * sizeof(float), cudaMemcpyDeviceToHost)); // copy the variables into gpu memory
+  
   //unsigned char *histHost;
   //histHost = (unsigned char *)malloc(HISTOGRAM_LENGTH * sizeof(float));
   //wbCheck(cudaMemcpy(histHost, deviceHistogram, HISTOGRAM_LENGTH * sizeof(float), cudaMemcpyDeviceToHost)); // copy the variables into gpu memory
@@ -261,9 +260,7 @@ int main(int argc, char **argv) {
   //if (HISTOGRAM_LENGTH%(2*BLOCK_SIZE)) dimGrid2.x++;
   //dim3 dimBlock2(BLOCK_SIZE, 1, 1);
   
-  //scanKernel<<<dimGrid2, dimBlock2>>>(deviceHistogram, deviceHistogramCDF, HISTOGRAM_LENGTH, imageWidth*imageHeight);
-  
-  cudaDeviceSynchronize();
+  outputImage = wbImage_getData(hostInputImageData);
   
    
   //for (int i=0; i<imageWidth * imageHeight; i++) printf("index %i, value %u", i, outputImageHost[i]);
