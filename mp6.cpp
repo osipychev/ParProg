@@ -1,5 +1,3 @@
-// Histogram Equalization
-
 #include <wb.h>
 
 #define wbCheck(stmt)                                                     \
@@ -25,7 +23,7 @@ __global__ void float2charKernel(float *inputImagePtr, unsigned char *outputImag
   outputImagePtr[index] = (unsigned char) (255 * inputImagePtr[index]);
   outputImagePtr[index + 1] = (unsigned char) (255 * inputImagePtr[index + 1]);
   outputImagePtr[index + 2] = (unsigned char) (255 * inputImagePtr[index + 2]);
-  //printf("x:%i, y:%i, R:%d, G:%d, B:%d \n",indX,indY,outputImagePtr[index],outputImagePtr[index+1],outputImagePtr[index+2]);
+  //if (index == 0) printf("%u \n",outputImagePtr[index]);
 }
 
 
@@ -39,9 +37,9 @@ __global__ void rgb2greyKernel(unsigned char *inputImagePtr, unsigned char *outp
   unsigned char g = inputImagePtr[index + 1];
   unsigned char b = inputImagePtr[index + 2];
   
-  if (indX < width && indY < height) {
+  if (indX < width && indY < height){
     outputImagePtr[width * indY + indX] = (unsigned char) (0.21*r + 0.71*g + 0.07*b);
-    //printf("x: %i, y: %i, %d \n",indX,indY,outputImagePtr[width * indY + indX]);
+    //printf("%i, %i, %d \n", indX, indY, outputImagePtr[width * indY + indX]);
   }
 }
 
@@ -54,20 +52,33 @@ __global__ void histKernel(unsigned char *inputImagePtr, float *histPtr,  int wi
   int indY = blockIdx.y * blockDim.y + threadIdx.y;
   int index = width * indY + indX;
   
-  if (index < HISTOGRAM_LENGTH) histPtr[indX] = 0.0;
-  __syncthreads();
-  
-  atomicAdd(&histPtr[(int)inputImagePtr[index]],1);
-  __syncthreads();
-  //printf("value: %d \n",inputImagePtr[index]);
-  
   if (index < HISTOGRAM_LENGTH) {
-    //histPtr[index] = histogramShared[index]/(float)(width*height);
-    //printf("hist: %i, value: %f, prob: %f \n",index, histogramShared[index], histPtr[index]);
-    printf("%f \n",histPtr[index]);
-  } 
+    histogramShared[indX] = 0.0;
+    histPtr[indX] = 0.0;
+  }
+  __syncthreads();
+  
+  int stride = blockDim.x * gridDim.x;    
+  while (indX < width*hight) {
+    atomicAdd( &(histogramShared[inputImagePtr[i]]), 1);
+    indX += stride;
+  }
+                              
+  //atomicAdd(&histogramShared[inputImagePtr[index]],1);
+  //if (index<16) printf("ind: %i, val: %d, hist: %d", index, inputImagePtr[index],histPtr[inputImagePtr[index]]);
+  //atomicAdd(&histPtr[(int)inputImagePtr[index]],1);
+  __syncthreads();
+  //if (index<16) printf("ind: %i, val: %d, hist: %d \n", index, inputImagePtr[index],histPtr[inputImagePtr[index]]);
+  
+  
+  
+  if (indX < HISTOGRAM_LENGTH) {
+    atomicAdd(&histPtr[indX],histogramShared[index]);
+  }
+  
+  __syncthreads();
+  //if (index < HISTOGRAM_LENGTH) printf(" %f, ", histPtr[index]);
 }
-
 
 __global__ void scanKernel(float *input, float *output, int len, int numOfPix) {
     
@@ -117,7 +128,7 @@ int main(int argc, char **argv) {
   int imageChannels;
   wbImage_t inputImage;
   wbImage_t outputImage;
-  //float *hostInputImageData;
+  float *hostInputImageData;
   //float *hostOutputImageData;
   const char *inputImageFile;
 
@@ -141,30 +152,29 @@ int main(int argc, char **argv) {
   wbTime_stop(Generic, "Importing data and creating memory on host");
 
   //@@ insert code here
+  hostInputImageData = wbImage_getData(inputImage);
   
   // allocate memory
-  wbCheck(cudaMalloc((void **) &deviceInputImage, sizeof(wbImage_t))); // allocate the value in the gpu memory and print an error code
+  wbCheck(cudaMalloc((void **) &deviceInputImage, imageWidth * imageHeight * imageChannels * sizeof(float))); // allocate the value in the gpu memory and print an error code
   wbCheck(cudaMalloc((void **) &deviceColorImage, imageWidth * imageHeight * imageChannels * sizeof(unsigned char))); // allocate the value in the gpu memory and print an error code
   wbCheck(cudaMalloc((void **) &deviceGreyImage, imageWidth * imageHeight * sizeof(unsigned char))); // allocate the value in the gpu memory and print an error code
   wbCheck(cudaMalloc((void **) &deviceHistogram, HISTOGRAM_LENGTH * sizeof(float))); // allocate the value in the gpu memory and print an error code
-  wbCheck(cudaMalloc((void **) &deviceHistogramCDF, HISTOGRAM_LENGTH * sizeof(float))); // allocate the value in the gpu memory and print an error code
-  
+  //wbCheck(cudaMalloc((void **) &deviceHistogramCDF, HISTOGRAM_LENGTH * sizeof(float))); // allocate the value in the gpu memory and print an error code
   
   //copy memory to device
-  wbCheck(cudaMemcpy(deviceInputImage, inputImage, sizeof(wbImage_t), cudaMemcpyHostToDevice)); // copy the variables into gpu memory
+  wbCheck(cudaMemcpy(deviceInputImage, hostInputImageData,imageWidth * imageHeight * imageChannels * sizeof(float), cudaMemcpyHostToDevice)); // copy the variables into gpu memory
    
   dim3 dimGrid(imageWidth/BLOCK_SIZE,imageHeight/BLOCK_SIZE,1);
   if (imageWidth%BLOCK_SIZE) dimGrid.x++;
   if (imageHeight%BLOCK_SIZE) dimGrid.y++;
   dim3 dimBlock(BLOCK_SIZE,BLOCK_SIZE,1);
   
-  wbTime_start(Generic, "All CUDA computations:");
+  wbTime_start(Generic, "All kernel runs");
   
   float2charKernel<<<dimGrid, dimBlock>>>(deviceInputImage, deviceColorImage, imageWidth, imageHeight, imageChannels);
   rgb2greyKernel<<<dimGrid, dimBlock>>>(deviceColorImage, deviceGreyImage, imageWidth, imageHeight, imageChannels);
   histKernel<<<dimGrid, dimBlock>>>(deviceGreyImage, deviceHistogram, imageWidth, imageHeight);
-  
-  wbTime_stop(Generic, "All CUDA computations:");
+  wbTime_stop(Generic, "All kernel runs");
 
   //unsigned char *histHost;
   //histHost = (unsigned char *)malloc(HISTOGRAM_LENGTH * sizeof(float));
@@ -172,11 +182,11 @@ int main(int argc, char **argv) {
   //for (int i=0; i<HISTOGRAM_LENGTH;i++)
     //wbLog(TRACE, "Element is ", (int)histHost[0]);
   
-  dim3 dimGrid2(HISTOGRAM_LENGTH/(2*BLOCK_SIZE), 1, 1);
-  if (HISTOGRAM_LENGTH%(2*BLOCK_SIZE)) dimGrid2.x++;
-  dim3 dimBlock2(BLOCK_SIZE, 1, 1);
+  //dim3 dimGrid2(HISTOGRAM_LENGTH/(2*BLOCK_SIZE), 1, 1);
+  //if (HISTOGRAM_LENGTH%(2*BLOCK_SIZE)) dimGrid2.x++;
+  //dim3 dimBlock2(BLOCK_SIZE, 1, 1);
   
-  scanKernel<<<dimGrid2, dimBlock2>>>(deviceHistogram, deviceHistogramCDF, HISTOGRAM_LENGTH, imageWidth*imageHeight);
+  //scanKernel<<<dimGrid2, dimBlock2>>>(deviceHistogram, deviceHistogramCDF, HISTOGRAM_LENGTH, imageWidth*imageHeight);
   
   cudaDeviceSynchronize();
   
