@@ -73,35 +73,21 @@ __global__ void histKernel2D(unsigned char *inputImagePtr, float *histPtr,  int 
 }
 
 
-__global__ void histogram_privatized_kernel(unsigned char* input, unsigned int* bins,unsigned int num_elements, unsigned int num_bins) {
-  unsigned int tid = blockIdx.x*blockDim.x + threadIdx.x;
-  extern __shared__ unsigned int histo_s[];
-  for(unsigned int binIdx = threadIdx.x; binIdx < num_bins; binIdx +=blockDim.x) {
-    histo_s[binIdx] = 0u;
-  }
+__global__ void histKernelSimple(unsigned char *inputImagePtr, float *histPtr,  int width, int height){
+  
+  int indX = blockIdx.x * blockDim.x + threadIdx.x; 
+  
+  //if (indX==0) printf("val: %d, hist: %f \n",inputImagePtr[indX], histPtr[inputImagePtr[indX]]);
+  
+  atomicAdd( &(histPtr[inputImagePtr[indX]]), 1);
+  
+  //if (indX==0) printf("val: %d, hist: %f \n",inputImagePtr[indX], histPtr[inputImagePtr[indX]]);
   __syncthreads();
   
-  for(unsigned int i = tid; i < num_elements; i += blockDim.x*gridDim.x) {
-    int alphabet_position = buffer[i] –“a”;
-    if (alphabet_position >= 0 && alpha_position < 26) atomicAdd(&(histo_s[alphabet_position/4]), 1);}
-  __syncthreads();
   
-  for(unsigned int binIdx = threadIdx.x; binIdx < num_bins; binIdx += blockDim.x) {                                                                      
-    atomicAdd(&(histo[binIdx]), histo_s[binIdx]);
-  }
-}
-
-
-void histSerial(unsigned char *inputImagePtr, float *histPtr,  int width, int height){
-
-  for (int i = 0; i < 256; i++) histPtr[i] = 0;
-    
-  for (int i = 0; i < width*height; i++){
-    histPtr[inputImagePtr[i]] += 1;
-  }
-  for (int i = 0; i < 256; i++) {
-    histPtr[i] /= (float)(width*height);
-    //printf("hist: %i, %f \n", i, histPtr[i]);
+  if (indX<256) {
+    printf("%f, ", histPtr[indX]);
+    histPtr[indX] /= (float)(width*height);
   }
 }
 
@@ -233,42 +219,22 @@ int main(int argc, char **argv) {
   wbTime_start(Generic, "All kernel runs");
   //float to char cuda
   float2charKernel<<<dimGrid, dimBlock>>>(deviceInputImage, deviceColorImage, imageWidth, imageHeight, imageChannels);
-  // grb to grey cuda
+  // rgb to grey cuda
   rgb2greyKernel<<<dimGrid, dimBlock>>>(deviceColorImage, deviceGreyImage, imageWidth, imageHeight, imageChannels);
-  
-  // histogram serial
-  float histHost[256];
-  unsigned char image[imageWidth*imageHeight];
-  cudaMemcpy(image, deviceGreyImage, imageWidth*imageHeight * sizeof(unsigned char), cudaMemcpyDeviceToHost);
-  histSerial(image, histHost, imageWidth, imageHeight);
-  //histKernel<<<imageHeight*imageWidth/256, 256>>>(deviceGreyImage, deviceHistogram, imageWidth, imageHeight);
-  
-  // scan histogram cuda
-  wbCheck(cudaMemcpy(deviceHistogram, histHost, HISTOGRAM_LENGTH * sizeof(float), cudaMemcpyHostToDevice)); // copy the variables into gpu memory
+  // make hist with aromic operation
+  histKernelSimple<<<imageHeight*imageWidth/256, 256>>>(deviceGreyImage, deviceHistogram, imageWidth, imageHeight);
+  // scan over histogram with cuda
   scanKernel<<<1, HISTOGRAM_LENGTH/2>>>(deviceHistogram, deviceHistogramCDF, HISTOGRAM_LENGTH);
-  
+  // correct the values using cuda
   histCorKernel<<<dimGrid, dimBlock>>>(deviceColorImage, deviceHistogramCDF, imageWidth, imageHeight, imageChannels);
+  // cast to float with cuda
   char2floatKernel<<<dimGrid, dimBlock>>>(deviceColorImage, deviceInputImage, imageWidth, imageHeight, imageChannels);
   
   cudaDeviceSynchronize();
   wbTime_stop(Generic, "All kernel runs");
 
   wbCheck(cudaMemcpy(hostInputImageData, deviceInputImage, imageWidth * imageHeight * imageChannels * sizeof(float), cudaMemcpyDeviceToHost)); // copy the variables into gpu memory
-  
-  //unsigned char *histHost;
-  //histHost = (unsigned char *)malloc(HISTOGRAM_LENGTH * sizeof(float));
-  //wbCheck(cudaMemcpy(histHost, deviceHistogram, HISTOGRAM_LENGTH * sizeof(float), cudaMemcpyDeviceToHost)); // copy the variables into gpu memory
-  //for (int i=0; i<HISTOGRAM_LENGTH;i++)
-    //wbLog(TRACE, "Element is ", (int)histHost[0]);
-  
-  //dim3 dimGrid2(HISTOGRAM_LENGTH/(2*BLOCK_SIZE), 1, 1);
-  //if (HISTOGRAM_LENGTH%(2*BLOCK_SIZE)) dimGrid2.x++;
-  //dim3 dimBlock2(BLOCK_SIZE, 1, 1);
-  
   wbImage_setData(outputImage,hostInputImageData);
-  
-   
-  //for (int i=0; i<imageWidth * imageHeight; i++) printf("index %i, value %u", i, outputImageHost[i]);
   
   wbSolution(args, outputImage);
 
@@ -276,6 +242,8 @@ int main(int argc, char **argv) {
   cudaFree(deviceInputImage);
   cudaFree(deviceColorImage);
   cudaFree(deviceGreyImage);
-
+  cudaFree(deviceHistogram);
+  cudaFree(deviceHistogramCDF);
+  
   return 0;
 }
