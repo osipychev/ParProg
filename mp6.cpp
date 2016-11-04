@@ -18,12 +18,14 @@ __global__ void float2charKernel(float *inputImagePtr, unsigned char *outputImag
   
   int indX = blockIdx.x * blockDim.x + threadIdx.x; 
   int indY = blockIdx.y * blockDim.y + threadIdx.y;
-  int index = width * channels * indY + indX;
+  if (indX < width && indY < height){
+    int index = (width * indY + indX) * channels;
 
   outputImagePtr[index] = (unsigned char) (255 * inputImagePtr[index]);
   outputImagePtr[index + 1] = (unsigned char) (255 * inputImagePtr[index + 1]);
   outputImagePtr[index + 2] = (unsigned char) (255 * inputImagePtr[index + 2]);
-  //if (index == 0) printf("%u \n",outputImagePtr[index]);
+  }
+    //if (index == 0) printf("pixel %i, r: %d, g: %d, b: %d \n",index, outputImagePtr[index],outputImagePtr[index+1],outputImagePtr[index+2]);
 }
 
 
@@ -31,7 +33,7 @@ __global__ void rgb2greyKernel(unsigned char *inputImagePtr, unsigned char *outp
   
   int indX = blockIdx.x * blockDim.x + threadIdx.x; 
   int indY = blockIdx.y * blockDim.y + threadIdx.y;
-  int index = width * channels * indY + indX;
+  int index = (width * indY + indX) * channels;
 
   unsigned char r = inputImagePtr[index];
   unsigned char g = inputImagePtr[index + 1];
@@ -41,6 +43,7 @@ __global__ void rgb2greyKernel(unsigned char *inputImagePtr, unsigned char *outp
     outputImagePtr[width * indY + indX] = (unsigned char) (0.21*r + 0.71*g + 0.07*b);
     //printf("%i, %i, %d \n", indX, indY, outputImagePtr[width * indY + indX]);
   }
+  if (width * indY + indX == 0) printf("pixel %i, grey: %d \n",width * indY + indX, outputImagePtr[width * indY + indX]);
 }
 
 
@@ -66,32 +69,26 @@ __global__ void histKernel2D(unsigned char *inputImagePtr, float *histPtr,  int 
   
   //histPtr[index] = histPtr[index]/(float)(width*height);
    __syncthreads();
-  if (index<256) printf("%f \n", histPtr[index]);
+  if (index<256) printf("hist: %i, %f \n", index, histPtr[index]);
 }
 
 
-__global__ void histKernel(unsigned char *inputImagePtr, float *histPtr,  int width, int height){
-  
-  __shared__ float histogramShared[HISTOGRAM_LENGTH];
-  
-  if (threadIdx.x < 256) {
-    histogramShared[threadIdx.x] = 0;
-    histPtr[threadIdx.x] = 0;
+__global__ void histogram_privatized_kernel(unsigned char* input, unsigned int* bins,unsigned int num_elements, unsigned int num_bins) {
+  unsigned int tid = blockIdx.x*blockDim.x + threadIdx.x;
+  extern __shared__ unsigned int histo_s[];
+  for(unsigned int binIdx = threadIdx.x; binIdx < num_bins; binIdx +=blockDim.x) {
+    histo_s[binIdx] = 0u;
   }
   __syncthreads();
   
-  int i = threadIdx.x + blockIdx.x * blockDim.x;
-  int stride = blockDim.x * gridDim.x;    
-  while (i < width*height) {
-    atomicAdd( &(histogramShared[inputImagePtr[i]]), 1);
-    i += stride;    
-  }
-  
+  for(unsigned int i = tid; i < num_elements; i += blockDim.x*gridDim.x) {
+    int alphabet_position = buffer[i] –“a”;
+    if (alphabet_position >= 0 && alpha_position < 26) atomicAdd(&(histo_s[alphabet_position/4]), 1);}
   __syncthreads();
-  if (threadIdx.x < 256)
-    atomicAdd( &(histPtr[threadIdx.x]), histogramShared[threadIdx.x] );
-
-  if (threadIdx.x<256 && blockIdx.x == 0 && blockIdx.y == 0) printf("%f \n", histPtr[threadIdx.x]);
+  
+  for(unsigned int binIdx = threadIdx.x; binIdx < num_bins; binIdx += blockDim.x) {                                                                      
+    atomicAdd(&(histo[binIdx]), histo_s[binIdx]);
+  }
 }
 
 
@@ -104,7 +101,7 @@ void histSerial(unsigned char *inputImagePtr, float *histPtr,  int width, int he
   }
   for (int i = 0; i < 256; i++) {
     histPtr[i] /= (float)(width*height);
-    //printf("%f \n", histPtr[i]);
+    //printf("hist: %i, %f \n", i, histPtr[i]);
   }
 }
 
@@ -147,8 +144,8 @@ __global__ void scanKernel(float *input, float *output, int len) {
   // save first and second blocks from shared memory to global
   if (x_in < len) output[x_in] = sharedMemory[tx];
   if (x_in + blockDim.x < len) output[x_in+blockDim.x] = sharedMemory[tx+blockDim.x];
-  //printf("%f \n",sharedMemory[tx]);
-  //printf("%f \n",sharedMemory[tx+blockDim.x]);
+  //printf("cdf: %i, %f \n",tx, sharedMemory[tx]);
+  //printf("cdf: %i, %f \n", tx+blockDim.x, sharedMemory[tx+blockDim.x]);
 }
 
 
@@ -156,12 +153,18 @@ __global__ void histCorKernel(unsigned char *imagePtr, float *histCdfPtr, int wi
   
   int indX = blockIdx.x * blockDim.x + threadIdx.x; 
   int indY = blockIdx.y * blockDim.y + threadIdx.y;
-  int index = width * channels * indY + indX;
+  if (indX < width && indY < height){
+  int index = (width * indY + indX) * channels;
 
-  for (int i=0; i<3; i++)
-    imagePtr[index+i] *= min(max(255*(histCdfPtr[index+i] - histCdfPtr[0])/(1 - histCdfPtr[0]), 0), 255);
-  
-  //if (index == 0) printf("%u \n",outputImagePtr[index]);
+  for (int i=0; i<3; i++){
+    if (index == 0)
+      printf("i: %d, pix: %d, cdf: %f, value: %f, result: %d \n",index+i,imagePtr[index+i],histCdfPtr[imagePtr[index+i]],
+             255.0*histCdfPtr[imagePtr[index+i]],
+            (unsigned char)(min(max(255.0*(histCdfPtr[imagePtr[index+i]] - histCdfPtr[0])/(1 - histCdfPtr[0]), 0.0), 255.0)));
+    
+    imagePtr[index+i] = (unsigned char)(min(max(255.0*(histCdfPtr[imagePtr[index+i]] - histCdfPtr[0])/(1 - histCdfPtr[0]), 0.0), 255.0));
+  }
+  }
 }
 
 
@@ -169,12 +172,14 @@ __global__ void char2floatKernel(unsigned char *inputImagePtr, float *outputImag
   
   int indX = blockIdx.x * blockDim.x + threadIdx.x; 
   int indY = blockIdx.y * blockDim.y + threadIdx.y;
-  int index = width * channels * indY + indX;
+  if (indX < width && indY < height){
+  int index = (width * indY + indX) * channels;
 
-  outputImagePtr[index] = (float)inputImagePtr[index])/255.0;
-  outputImagePtr[index + 1] = (float)inputImagePtr[index + 1])/255.0;
-  outputImagePtr[index + 2] = (float)inputImagePtr[index + 2])/255.0;
-  //if (index == 0) printf("%u \n",outputImagePtr[index]);
+  outputImagePtr[index] = (float)(inputImagePtr[index])/255.0;
+  outputImagePtr[index + 1] = (float)(inputImagePtr[index + 1])/255.0;
+  outputImagePtr[index + 2] = (float)(inputImagePtr[index + 2])/255.0;
+  if (index == 0) printf("%f, %f, %f \n",outputImagePtr[index],outputImagePtr[index+1],outputImagePtr[index+2]);
+  }
 }
 
 int main(int argc, char **argv) {
@@ -260,7 +265,7 @@ int main(int argc, char **argv) {
   //if (HISTOGRAM_LENGTH%(2*BLOCK_SIZE)) dimGrid2.x++;
   //dim3 dimBlock2(BLOCK_SIZE, 1, 1);
   
-  outputImage = wbImage_getData(hostInputImageData);
+  wbImage_setData(outputImage,hostInputImageData);
   
    
   //for (int i=0; i<imageWidth * imageHeight; i++) printf("index %i, value %u", i, outputImageHost[i]);
